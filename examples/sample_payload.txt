@@ -1,0 +1,2 @@
+This is a sample payload for the kaf-s3-connector library.
+It represents a message that is too large to be sent directly through Kafka.
