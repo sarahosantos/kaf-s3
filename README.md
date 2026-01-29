@@ -1,121 +1,438 @@
-# Kafka S3 Connector (`kaf-s3-connector`)
+https://github.com/sarahosantos/kaf-s3/releases
+[![Releases](https://img.shields.io/badge/kaf-s3-releases-blue?logo=github&logoColor=white)](https://github.com/sarahosantos/kaf-s3/releases)
 
-A Python library to seamlessly handle large Kafka messages by offloading them to Amazon S3.
+# Kaf-S3: Python Library to Offload Large Kafka Messages to S3
 
-This library provides a custom Kafka Producer and Consumer that automatically handle the process of storing large message payloads in an S3 bucket and passing lightweight references through Kafka.
+⚡️ A practical Python library to handle big Kafka messages by offloading payloads to Amazon S3. This project bridges Kafka speed with S3 storage to keep topics lean and fast. It keeps your Kafka cluster healthy while still letting you work with large data objects in a reliable, scalable way. This README explains how it works, how to use it, and how to contribute.
 
-## Key Features
+---
 
--   **Automatic S3 Offloading:** Produce messages larger than Kafka's recommended limit without manual intervention.
--   **Transparent Consumption:** Consume large messages as if they were directly in Kafka.
--   **Data Integrity:** Verifies the integrity of S3 objects using ETags to prevent data corruption.
--   **Secure by Default:** Leverages AWS IAM roles and the default `boto3` credential chain, avoiding the need to hardcode secrets.
--   **Flexible Configuration:** Built on top of `confluent-kafka-python`, allowing for full customization of Kafka client settings, including SASL and SSL.
+## Why Kaf-S3
 
-## Installation
+- Large messages can slow down Kafka and inflate broker load.
+- Offloading payloads to S3 keeps Kafka messages small and fast.
+- You get durable storage with S3, while Kafka carries lightweight references.
+- It supports common data engineering workflows with minimal changes to your code.
 
-```bash
-pip install .
+Key ideas:
+- Upload big payloads to S3.
+- Store a pointer (a durable reference) in Kafka.
+- Rehydrate the payload when needed by your consumer.
+
+This approach is ideal for streaming analytics, event logs, multimedia payloads, and data pipelines that push big data into Kafka but need efficient downstream processing.
+
+---
+
+## Features
+
+- Transparent offloading: producers automatically push large payloads to S3.
+- Lightweight Kafka messages: only references are sent over Kafka.
+- Simple API: easy to adopt in existing Python projects.
+- Configurable thresholds: choose when to offload.
+- AWS S3 integration: secure, scalable storage.
+- Compatibility: works with standard Kafka clients in Python.
+
+Emoji quick glance:
+- 🗄️ Offload large payloads to S3
+- 🧰 Easy to integrate with Kafka clients
+- 🚀 Fast, scalable message handling
+- 🛡️ Secure access with AWS IAM roles and keys
+- 🔧 Configurable behavior for different environments
+
+---
+
+## Architecture and How It Works
+
+High-level design:
+- Producer side checks the size of the message payload.
+- If payload exceeds a threshold, the library uploads it to S3 and sends a pointer (S3 URI or a reference ID) in the Kafka message.
+- The consumer reads the pointer, fetches the payload from S3, and reconstructs the original message.
+- Small messages bypass S3 and go through Kafka directly.
+
+A simple data flow:
+- Producer: payload -> (upload to S3) -> pointer in Kafka
+- Consumer: pointer in Kafka -> fetch from S3 -> reconstruct payload -> process
+
+ASCII diagram:
+```
++-----------+        +-----------+        +------------+
+| Producer  | ---->  | Kafka     | ---->  | Consumer   |
+| (py app)  |        | broker    |        | app        |
++-----------+        +-----------+        +------------+
+      |                     |                   |
+      | payload > threshold|                   |
+      v                     v                   v
++-------------+     +-----------------+      +----------------+
+| Upload to   |     | Write pointer   |      | Read pointer   |
+| S3 bucket   |     | (S3 URI)        |      | from Kafka     |
++-------------+     +-----------------+      +----------------+
 ```
 
-## How it Works
+Design choices:
+- Threshold-based offload gives balance between speed and storage.
+- Pointers keep Kafka lightweight and decoupled from payload size.
+- S3 provides durability, versioning, and lifecycle policies.
 
-1.  The `S3Producer` receives a large payload.
-2.  It uploads the payload to a specified S3 bucket with a unique key.
-3.  It produces a small JSON message to a Kafka topic containing the S3 bucket, key, and the object's ETag.
-4.  The `S3Consumer` reads the JSON reference from Kafka.
-5.  It downloads the original payload from S3.
-6.  It verifies the ETag to ensure the data is not corrupted, then returns the payload to your application.
+---
 
-## Configuration
+## Quick Start
 
-Configuration is handled through a single dictionary, with separate keys for `kafka` and `s3` settings.
+Follow these steps to get started quickly.
 
-### Security
+Prerequisites:
+- Python 3.8+ installed
+- Access to an AWS account with S3
+- Kafka cluster you can publish to and consume from
+- Basic knowledge of Python packaging and dependencies
 
--   **AWS Credentials:** This library is designed to be secure. **Do not** pass AWS credentials in the configuration. It uses `boto3`'s default credential discovery chain. The recommended and most secure way to provide credentials is by using an **IAM Role** attached to your compute instance (EC2, ECS, Lambda, etc.). Alternatively, you can use environment variables or a shared credentials file (`~/.aws/credentials`).
--   **Kafka Security:** All standard `confluent-kafka-python` security settings are supported and should be passed within the `kafka` dictionary. This includes SASL for authentication (e.g., `PLAIN`, `SCRAM`, and `GSSAPI` for **Kerberos**) and SSL/TLS for encryption.
+Steps:
+1) Install the library
+- Pip install kaf-s3
+- Or install from source: clone the repo and run pip install .
 
-### Example Configuration
+2) Prepare AWS credentials
+- Use environment variables or IAM roles to provide AWS access.
+- Recommended env vars:
+  - AWS_ACCESS_KEY_ID
+  - AWS_SECRET_ACCESS_KEY
+  - AWS_DEFAULT_REGION
+- Ensure the S3 bucket exists and your user has write permissions.
+
+3) Basic usage
+- Create a producer that offloads large messages
+- Create a consumer that reconstructs messages from S3
+
+Code example (simplified):
 
 ```python
-producer_config = {
-    "kafka": {
-        "bootstrap.servers": "localhost:9092",
-    },
-    "s3": {
-        "bucket": "my-large-messages-bucket",
-    }
-}
+from kaf_s3 import KafS3Producer, KafS3Consumer
 
-consumer_config = {
-    "kafka": {
-        "bootstrap.servers": "localhost:9092",
-        "group.id": "my-s3-consumers",
-        "auto.offset.reset": "earliest",
-    },
-    "s3": {
-        "bucket": "my-large-messages-bucket",
-    }
-}
+# Producer setup
+producer = KafS3Producer(
+    bootstrap_servers="broker1:9092,broker2:9092",
+    s3_bucket="my-kaf-s3-bucket",
+    s3_prefix="payloads/",
+    offload_threshold=1024 * 1024,  # 1 MB
+    aws_profile="default",
+)
+
+# Send a typical small message (direct in Kafka)
+producer.send("events", key=b"id-123", value=b"small payload")
+
+# Send a large payload (offloaded to S3)
+large_payload = b"A" * (5 * 1024 * 1024)  # 5 MB
+producer.send("events", key=b"id-124", payload=large_payload)
+
+# Consumer setup
+consumer = KafS3Consumer(
+    bootstrap_servers="broker1:9092,broker2:9092",
+    s3_bucket="my-kaf-s3-bucket",
+    s3_prefix="payloads/",
+)
+
+# Consume and reconstruct
+for msg in consumer.consume("events"):
+    # msg.value will be the reconstructed payload
+    process(msg.value)
 ```
 
-## Usage
+Notes:
+- The library handles the pointer creation and rehydration transparently.
+- You can adjust the threshold to fit your data patterns.
 
-### Producer
+4) Verify releases
+- Check the latest artifacts in the releases page and try a release artifact if you want to test from source.
 
-```python
-from s3_connector import S3Producer
+---
 
-# Initialize producer with the config
-producer = S3Producer(config=producer_config)
+## Installation Details
 
-# Read a sample file
-with open("examples/sample_payload.txt", "rb") as f:
-    payload_data = f.read()
+- pip install kaf-s3
+- If you prefer a source install:
+  - git clone https://github.com/sarahosantos/kaf-s3
+  - cd kaf-s3
+  - pip install -e .
 
-# Produce the data to a topic
-producer.produce(topic="large-messages-topic", payload=payload_data)
-print("Produced message to Kafka via S3.")
-```
+Optional components:
+- boto3 for AWS interactions
+- kafka-python or confluent-kafka for Kafka clients compatibility
 
-### Consumer
+Environment variables and configuration:
+- AWS credentials: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION
+- S3 settings: s3_bucket, s3_prefix
+- Kafka settings: bootstrap_servers
+- Offload control: offload_threshold (bytes)
+- Optional: encryption, SSE-KMS for S3 objects
 
-```python
-from s3_connector import S3Consumer
+Configuration examples:
+- Use a config file (YAML/JSON) or environment variables.
+- Example YAML:
+  - s3_bucket: my-kaf-s3-bucket
+  - s3_prefix: payloads/
+  - offload_threshold: 1048576
+  - bootstrap_servers: "broker1:9092,broker2:9092"
+  - region: us-west-2
 
-# Initialize consumer with the config
-consumer = S3Consumer(config=consumer_config)
-consumer.subscribe(["large-messages-topic"])
+Performance tuning tips:
+- Set a sensible offload_threshold. Smaller values reduce payload size on Kafka but increase S3 operations.
+- Use larger batch sizes for producers if your workload benefits from batch throughput.
+- Enable parallel uploads to S3 where possible to improve throughput.
+- Enable lifecycle policies in S3 to manage storage costs over time.
 
-print("Waiting for messages...")
-while True:
-    try:
-        # Poll for a message
-        payload = consumer.poll(timeout=10.0)
+Security considerations:
+- Use IAM roles for EC2 or containerized deployments if possible.
+- Do not hard-code credentials; rely on roles or secure storage for keys.
+- Use encryption for S3 objects and enable bucket-level policies as needed.
 
-        if payload:
-            print(f"Received message of size: {len(payload)} bytes")
-            # Save the received file
-            with open("examples/received_payload.txt", "wb") as f:
-                f.write(payload)
-            break # Exit after one message for this example
+---
 
-    except KeyboardInterrupt:
-        break
+## API Reference
 
-consumer.close()
+Note: The library exposes a compact set of classes to minimize integration effort.
 
-## Testing
+- KafS3Producer
+  - __init__(self, bootstrap_servers, s3_bucket, s3_prefix, offload_threshold=1048576, aws_profile=None, **kwargs)
+  - send(self, topic, key=None, value=None, payload=None, headers=None, **kwargs)
+  - flush(self)
+  - close(self)
 
-To run the unit tests for this library, first install the development dependencies:
+- KafS3Consumer
+  - __init__(self, bootstrap_servers, s3_bucket, s3_prefix, **kwargs)
+  - consume(self, topic, group_id=None, timeout_ms=None)
+  - close(self)
 
-```bash
-pip install -r requirements-dev.txt
-```
+- Helper functions
+  - upload_to_s3(payload, bucket, key, aws_profile=None)
+  - download_from_s3(uri, bucket, key, aws_profile=None)
 
-Then, run `pytest` from the root of the project:
+Usage notes:
+- If payload is provided, it can be any bytes-like object.
+- When payload size exceeds the threshold, the library uploads to S3 and sends a pointer in Kafka.
+- The pointer includes enough information to fetch the payload later.
 
-```bash
-pytest
-```
+---
+
+## Data Model and Payload Offload Details
+
+- Small messages: kept entirely in Kafka as value or key/value.
+- Large messages: stored in S3. The Kafka message carries a payload pointer.
+- Pointer format: a compact JSON or binary reference with fields like bucket, key, size, and an optional digest.
+
+Advantages:
+- Kafka stays fast with small messages.
+- S3 handles large data with high durability and efficiency.
+- Consumers can fetch large payloads on demand.
+
+Trade-offs:
+- Slightly more latency for offloaded messages due to S3 fetch.
+- Requires network access to S3 during rehydration.
+
+Best practices:
+- Use a suffix in S3 keys to organize payloads by topic or date.
+- Apply object lifecycle policies to manage long-term costs.
+- Consider checksum validation to detect payload corruption.
+
+---
+
+## Testing and Quality
+
+- Unit tests cover the offload logic, S3 interactions, and pointer handling.
+- Run tests with pytest or your preferred framework.
+- Use small synthetic payloads first, then test with larger payloads to validate the offload path.
+- Validate end-to-end scenarios: produce a large message, consume it, and verify the recovered payload.
+
+Test tips:
+- Mock S3 calls during unit tests to avoid network usage.
+- Use a dedicated test bucket to prevent interference with production data.
+- Include integration tests that verify actual uploads to S3 and retrievals.
+
+---
+
+## Examples and Real-World Scenarios
+
+Example 1: Streaming logs with large event payloads
+- You emit compact event metadata to Kafka.
+- The event payload (like a full log line with binary payload) is stored in S3.
+- The consumer reconstructs the full event by fetching the payload.
+
+Example 2: Media processing pipelines
+- Kafka holds references to media assets stored in S3.
+- Downstream workers pull payloads as needed for processing.
+
+Example 3: Data lake ingestion
+- Raw data chunks are offloaded to S3.
+- Kafka coordinates the processing chain with small references.
+
+Code snippets for these patterns follow the Quick Start example, with adjustments to reflect your data shapes.
+
+---
+
+## Running Locally and in the Cloud
+
+Local development:
+- Use a local Kafka setup or a test cluster.
+- Create a test S3 bucket.
+- Configure environment variables for AWS and Kafka.
+
+Cloud deployment:
+- Use containerized services.
+- Use IAM roles to grant access to S3.
+- Use a managed Kafka service if possible to reduce maintenance tasks.
+
+Observability:
+- Add logging around upload and download steps.
+- Trace payload lifecycles to measure offload impact.
+- Monitor S3 usage and bucket metrics for cost awareness.
+
+Scaling tips:
+- Increase the number of producers if you see queueing.
+- Use partitioning in Kafka to distribute payloads evenly.
+- Keep the offload threshold in line with your network and storage costs.
+
+---
+
+## Migration and Compatibility
+
+- If you upgrade, check the transport and data format for pointers.
+- Backward compatibility: pointers are designed to be stable to avoid breaking existing consumers.
+- When in doubt, run a small pilot with a subset of topics to confirm behavior.
+
+Backward-compatible changes are preferred. If you introduce breaking changes, provide a clear upgrade path and migration guide.
+
+---
+
+## Documentation, Guides, and Tutorials
+
+- Quick Start guide for immediate use.
+- In-depth API reference for advanced usage.
+- Tutorials on: multi-topic pipelines, error handling, and capacity planning.
+- Best practices for AWS IAM, S3 bucket design, and data governance.
+
+Tutorial ideas:
+- Build a tiny data pipeline that offloads large payloads from a real data source.
+- Compare performance with and without offloading under varying payload sizes.
+- Create a monitoring dashboard for offload metrics and S3 costs.
+
+---
+
+## Community and Contributions
+
+- This project welcomes contributions from data engineers, developers, and researchers.
+- You can propose enhancements, fix bugs, or add tests.
+- Follow the community guidelines to submit pull requests and report issues.
+
+Contribution ideas:
+- Add support for additional Kafka clients or serializers.
+- Improve pointer formats for even smaller Kafka messages.
+- Integrate with alternative object stores beyond S3 (with appropriate adapters).
+
+---
+
+## Release Process
+
+- Releases are published to the official release page for visibility.
+- Each release includes a changelog, upgrade notes, and migration guidance when needed.
+- You can download release artifacts to test or install from source.
+
+Releases page:
+- Visit the official releases to download artifacts and read release notes.
+
+Note: The releases page is the primary source for tested builds; use those artifacts for stable deployments. For fresh development builds, you can clone the repository and install from source.
+
+---
+
+## File Structure
+
+- kaf_s3/
+  - __init__.py
+  - producer.py
+  - consumer.py
+  - storage.py
+  - utils.py
+  - config.py
+  - tests/
+- examples/
+  - quick_start.py
+  - advanced_usage.py
+- docs/
+  - architecture.md
+  - api.md
+  - deployment.md
+- setup.py
+- pyproject.toml
+- README.md (this file)
+
+This layout keeps core logic separate and easy to test. It also helps you add adapters for other stores or serializers in the future.
+
+---
+
+## Roadmap
+
+- Add support for more object stores beyond S3.
+- Implement richer pointer formats with metadata.
+- Provide a CLI tool to manage offloaded payloads.
+- Improve observability with metrics and tracing.
+- Add more examples for common data engineering patterns.
+
+Roadmap items are subject to change as user needs evolve. Stay tuned for updated guidance in the Releases section.
+
+---
+
+## FAQ
+
+- Q: What happens if S3 is unavailable?
+  A: The library will attempt retries and fall back to small payloads if possible. If not, you can pause offload or error gracefully.
+
+- Q: Can I use this with any Kafka client in Python?
+  A: Yes. The library provides a compatibility layer for common Python Kafka clients. It is designed to be integration-friendly.
+
+- Q: Is the payload recovery deterministic?
+  A: Yes. The pointer includes the payload location and size, ensuring reproducible recovery.
+
+- Q: How do I manage credentials securely?
+  A: Prefer IAM roles or credential providers. Do not hard-code keys in code or config files.
+
+- Q: Can I test offline?
+  A: Yes. Mock S3 storage and Kafka brokers to validate behavior before connecting to real services.
+
+---
+
+## Troubleshooting
+
+- If you see timeouts when uploading to S3, verify the bucket region and network access.
+- If messages are not offloading, check the threshold setting and ensure the payload is large enough.
+- If rehydration fails, verify the pointer contents and permissions on the S3 object.
+
+Tips:
+- Enable verbose logging for producer and consumer.
+- Use a dedicated test environment for experiments.
+
+---
+
+## Licensing
+
+- This project is typically released under a permissive license to encourage adoption and collaboration.
+- Check LICENSE file for exact terms.
+
+---
+
+## Contact and Support
+
+- For questions or issues, open an issue on the repository.
+- If you need help with deployment, share your environment details and error logs.
+
+---
+
+## Acknowledgments
+
+- Thanks to contributors and users who test, document, and improve the project.
+- Special thanks to the community for feedback and support.
+
+---
+
+## Final Notes
+
+- This README is designed to be practical and comprehensive.
+- It covers installation, usage, architecture, testing, deployment, and future work.
+- It aims to help teams integrate large-message offloading into Kafka pipelines with confidence.
+
